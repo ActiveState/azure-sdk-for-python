@@ -1,5 +1,19 @@
 # Release History
 
+## 1.7.1.post1 (2026-11-12)
+
+ActiveState security release for the Python 2.7 line (azure-identity 1.7.x is the last line
+that supports Python 2.7).
+
+### Bugs Fixed
+
+- CVE-2024-35255 (GHSA-m5vv-6r4h-3vj9): `AzureArcCredential` validates the key file named by
+  the Azure Arc challenge before reading it. The file must exist, sit directly in the agent's
+  token directory (`/var/opt/azcmagent/tokens` on Linux,
+  `%PROGRAMDATA%\AzureConnectedMachineAgent\Tokens` on Windows), have a `.key` extension and
+  be at most 4096 bytes; otherwise `ClientAuthenticationError` is raised. Backported from
+  azure-identity 1.16.1.
+
 ## 1.7.1 (2021-11-09)
 
 ### Bugs Fixed
