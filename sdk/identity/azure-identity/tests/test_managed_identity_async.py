@@ -703,7 +703,9 @@ async def test_azure_arc(tmpdir):
         "os.environ",
         {EnvironmentVariables.IDENTITY_ENDPOINT: identity_endpoint, EnvironmentVariables.IMDS_ENDPOINT: imds_endpoint},
     ):
-        token = await ManagedIdentityCredential(transport=transport).get_token(scope)
+        # the key file must be in the platform's agent token directory: point it at the test's
+        with mock.patch("azure.identity._credentials.azure_arc._get_key_file_path", lambda: key_file.dirname):
+            token = await ManagedIdentityCredential(transport=transport).get_token(scope)
         assert token.token == access_token
         assert token.expires_on == expires_on
 

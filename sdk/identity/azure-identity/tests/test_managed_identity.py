@@ -747,7 +747,9 @@ def test_azure_arc(tmpdir):
         "os.environ",
         {EnvironmentVariables.IDENTITY_ENDPOINT: identity_endpoint, EnvironmentVariables.IMDS_ENDPOINT: imds_endpoint},
     ):
-        token = ManagedIdentityCredential(transport=transport).get_token(scope)
+        # the key file must be in the platform's agent token directory: point it at the test's
+        with mock.patch("azure.identity._credentials.azure_arc._get_key_file_path", lambda: key_file.dirname):
+            token = ManagedIdentityCredential(transport=transport).get_token(scope)
         assert token.token == access_token
         assert token.expires_on == expires_on
 
@@ -765,6 +767,77 @@ def test_azure_arc_client_id():
 
     with pytest.raises(ClientAuthenticationError):
         credential.get_token("scope")
+
+
+def _arc_challenge_transport(identity_endpoint, scope, key_path, count=1):
+    """A transport whose identity endpoint answers each request with an Arc challenge naming key_path"""
+    request = Request(
+        base_url=identity_endpoint,
+        method="GET",
+        required_headers={"Metadata": "true"},
+        required_params={"api-version": "2019-11-01", "resource": scope},
+    )
+    response = mock_response(status_code=401, headers={"WWW-Authenticate": "Basic realm={}".format(key_path)})
+    return validating_transport(requests=[request] * count, responses=[response] * count)
+
+
+ARC_ENVIRON = {
+    EnvironmentVariables.IDENTITY_ENDPOINT: "http://localhost:42/token",
+    EnvironmentVariables.IMDS_ENDPOINT: "http://localhost:42",
+}
+
+
+def test_azure_arc_key_too_large(tmpdir):
+    """CVE-2024-35255: a key file larger than 4096 bytes is refused"""
+    key_file = tmpdir.join("key_file.key")
+    key_file.write("X" * 4097)
+    transport = _arc_challenge_transport("http://localhost:42/token", "scope", str(key_file))
+
+    with mock.patch("os.environ", ARC_ENVIRON):
+        with mock.patch("azure.identity._credentials.azure_arc._get_key_file_path", lambda: str(tmpdir)):
+            with pytest.raises(ClientAuthenticationError) as ex:
+                ManagedIdentityCredential(transport=transport).get_token("scope")
+    assert "file size" in str(ex.value)
+
+
+def test_azure_arc_key_not_exist():
+    """CVE-2024-35255: a key file path that does not exist is refused before any open()"""
+    transport = _arc_challenge_transport("http://localhost:42/token", "scope", "/path/to/key_file")
+
+    with mock.patch("os.environ", ARC_ENVIRON):
+        with pytest.raises(ClientAuthenticationError) as ex:
+            ManagedIdentityCredential(transport=transport).get_token("scope")
+    assert "not exist" in str(ex.value)
+
+
+def test_azure_arc_key_invalid(tmpdir):
+    """CVE-2024-35255: a key file outside the agent token directory, or without .key, is refused"""
+    key_file = tmpdir.join("key_file.txt")
+    key_file.write("secret")
+    transport = _arc_challenge_transport("http://localhost:42/token", "scope", str(key_file), count=2)
+
+    with mock.patch("os.environ", ARC_ENVIRON):
+        with mock.patch("azure.identity._credentials.azure_arc._get_key_file_path", lambda: "/foo"):
+            with pytest.raises(ClientAuthenticationError) as ex:
+                ManagedIdentityCredential(transport=transport).get_token("scope")
+        assert "Unexpected file path" in str(ex.value)
+
+        with mock.patch("azure.identity._credentials.azure_arc._get_key_file_path", lambda: str(tmpdir)):
+            with pytest.raises(ClientAuthenticationError) as ex:
+                ManagedIdentityCredential(transport=transport).get_token("scope")
+        assert "extension" in str(ex.value)
+
+
+def test_azure_arc_key_default_directory(tmpdir):
+    """CVE-2024-35255: with no override, a key file in a temp directory is not the agent's and is refused"""
+    key_file = tmpdir.join("key_file.key")
+    key_file.write("secret")
+    transport = _arc_challenge_transport("http://localhost:42/token", "scope", str(key_file))
+
+    with mock.patch("os.environ", ARC_ENVIRON):
+        with pytest.raises(ClientAuthenticationError) as ex:
+            ManagedIdentityCredential(transport=transport).get_token("scope")
+    assert "invalid" in str(ex.value)
 
 
 def test_token_exchange(tmpdir):
